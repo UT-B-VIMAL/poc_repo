@@ -1,0 +1,396 @@
+const WebSocket = require("ws");
+const { verifySocketToken } = require("../utils/jwt");
+const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
+const { createTicket,
+  updateTicket,
+  deleteTicket,
+  moveTicket, getAllTickets, getTicketsByUser   } = require("../modals/ticket.model");
+
+
+
+
+
+
+module.exports = function kanbanSocket(server) {
+  const wss = new WebSocket.Server({
+    server,
+    path: "/ws/kanban",
+  });
+
+  const boards = new Map();
+
+  /* ============================= */
+  /* CONNECTION */
+  /* ============================= */
+  wss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.userId = null;
+    ws.boardId = null;
+
+    console.log("🔌 Socket connected");
+
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
+    ws.on("message", (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
+      }
+
+      handleMessage(ws, msg);
+    });
+
+    ws.on("close", () => {
+      console.log("❌ Socket closed");
+      cleanup(ws);
+    });
+
+    ws.on("error", () => {
+      cleanup(ws);
+    });
+  });
+
+  /* ============================= */
+  /* HEARTBEAT (PING) */
+  /* ============================= */
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        cleanup(ws);
+        return ws.terminate();
+      }
+
+      ws.isAlive = false;
+      ws.ping(); // 🔔 SERVER PING
+    });
+  }, 30000);
+
+  wss.on("close", () => clearInterval(interval));
+
+  /* ============================= */
+  /* MESSAGE ROUTER */
+  /* ============================= */
+  function handleMessage(ws, { type, payload }) {
+
+  /* ===== AUTH & BOARD JOIN ===== */
+  if (type === "JOIN_BOARD") {
+    return authenticateAndJoin(ws, payload);
+  }
+
+  /* ===== AUTH GUARD ===== */
+  if (!ws.userId || !ws.boardId) {
+    return ws.close(4001, "Unauthorized");
+  }
+
+  /* ===== HEARTBEAT ===== */
+  if (type === "PING") {
+    return ws.send(JSON.stringify({ type: "PONG" }));
+  }
+
+  /* ===== BOARD LEAVE ===== */
+  if (type === "LEAVE_BOARD") {
+    cleanup(ws);
+    return ws.send(JSON.stringify({ type: "LEFT_BOARD" }));
+  }
+  if (type === "GET_USERS") {
+    const board = boards.get(ws.boardId);
+    if (!board) return ws.send(JSON.stringify({ type: "BOARD_USERS", payload: { boardId: ws.boardId, users: [] } }));
+
+    const users = Array.from(board.keys()); // userIds in board
+    return ws.send(JSON.stringify({ type: "BOARD_USERS", payload: { boardId: ws.boardId, users } }));
+  }
+  if (type === "GET_ALL_USERS") {
+  const allBoards = [];
+
+  boards.forEach((boardMap, boardId) => {
+    const users = Array.from(boardMap.keys()); // userIds in this board
+    allBoards.push({ boardId, users });
+  });
+
+  return ws.send(
+    JSON.stringify({
+      type: "ALL_BOARD_USERS",
+      payload: allBoards
+    })
+  );
+}
+
+
+  /* ===== KANBAN EVENTS ===== */
+  switch (type) {
+
+    case "CREATE_CARD":
+      return handleCreateCard(ws, payload);
+
+    case "UPDATE_CARD":
+      return handleUpdateCard(ws, payload);
+
+    case "DELETE_CARD":
+      return handleDeleteCard(ws, payload);
+
+    case "MOVE_CARD":
+      return handleMoveCard(ws, payload);
+    
+    case "GET_ALL_TICKETS":
+      return handleGetAllTickets(ws);
+
+    case "GET_USER_TICKETS":
+      return handleGetUserTickets(ws);
+
+    default:
+      return ws.send(
+        JSON.stringify({
+          type: "ERROR",
+          message: "Unknown socket event"
+        })
+      );
+  }
+}
+
+  /* ============================= */
+  /* AUTH + JOIN */
+  /* ============================= */
+  function authenticateAndJoin(ws, { boardId, token }) {
+    try {
+      if (isTokenBlacklisted(token)) {
+      throw new Error("Token revoked");
+    }
+
+    const decoded = verifySocketToken(token);
+
+      ws.userId = decoded.userId;
+      ws.boardId = boardId;
+
+      if (!boards.has(boardId)) {
+        boards.set(boardId, new Map());
+      }
+
+      if (!boards.get(boardId).has(ws.userId)) {
+        boards.get(boardId).set(ws.userId, new Set());
+      }
+
+      boards.get(boardId).get(ws.userId).add(ws);
+
+      ws.send(
+        JSON.stringify({
+          type: "AUTH_SUCCESS",
+          payload: {
+            boardId,
+            userId: ws.userId,
+          },
+        })
+      );
+    } catch (err) {
+      ws.send(
+        JSON.stringify({
+          type: "AUTH_FAILED",
+          message: "Invalid or expired token",
+        })
+      );
+      ws.close();
+    }
+  }
+
+  /* ============================= */
+  /* CLEANUP */
+  /* ============================= */
+  function cleanup(ws) {
+    const { boardId, userId } = ws;
+    if (!boardId || !userId) return;
+
+    const board = boards.get(boardId);
+    if (!board) return;
+
+    const sockets = board.get(userId);
+    if (!sockets) return;
+
+    sockets.delete(ws);
+
+    if (sockets.size === 0) {
+      board.delete(userId);
+    }
+
+    if (board.size === 0) {
+      boards.delete(boardId);
+    }
+  }
+
+  /* ============================= */
+  /* BROADCAST */
+  /* ============================= */
+  function broadcast(ws, type, payload) {
+    const board = boards.get(ws.boardId);
+    if (!board) return;
+
+    const message = JSON.stringify({ type, payload });
+
+    board.forEach((sockets) => {
+      sockets.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
+        }
+      });
+    });
+  }
+
+  async function handleCreateCard(ws, payload) {
+  try {
+    const { title, status_id } = payload;
+
+    if (!title || !status_id) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Missing title or status"
+      }));
+    }
+console.log("userid",ws.userId);
+console.log("payload",payload);
+
+    // 🔐 INSERT INTO DB
+    const card = await createTicket({
+      title,
+      status_id,
+      userId: ws.userId,
+    });
+
+    // 📢 BROADCAST SAVED CARD
+    broadcast(ws, "CARD_CREATED", card);
+
+  } catch (err) {
+    console.error("CREATE_CARD DB error:", err);
+
+    ws.send(JSON.stringify({
+      type: "ERROR",
+      message: "Failed to create card"
+    }));
+  }
+}
+
+async function handleUpdateCard(ws, payload) {
+  try {
+    const { id, title, status_id } = payload;
+
+    if (!id || !title || status_id === undefined) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Missing update data"
+      }));
+    }
+
+    const card = await updateTicket({
+      id,
+      title,
+      status_id,
+      userId: ws.userId,
+    });
+
+    broadcast(ws, "CARD_UPDATED", card);
+
+  } catch (err) {
+    console.error("UPDATE_CARD error:", err);
+    ws.send(JSON.stringify({ type: "ERROR", message: "Update failed" }));
+  }
+}
+async function handleDeleteCard(ws, payload) {
+  try {
+    const { id } = payload;
+
+    if (!id) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Missing card id"
+      }));
+    }
+
+    await deleteTicket({ id });
+
+    broadcast(ws, "CARD_DELETED", { id });
+
+  } catch (err) {
+    console.error("DELETE_CARD error:", err);
+    ws.send(JSON.stringify({ type: "ERROR", message: "Delete failed" }));
+  }
+}
+async function handleMoveCard(ws, payload) {
+  try {
+    const { id, status_id } = payload;
+
+    if (!id || status_id === undefined) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Missing move data"
+      }));
+    }
+
+    const card = await moveTicket({
+      id,
+      status_id,
+      userId: ws.userId,
+    });
+
+    broadcast(ws, "CARD_MOVED", card);
+
+  } catch (err) {
+    console.error("MOVE_CARD error:", err);
+    ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" }));
+  }
+}
+
+async function handleGetAllTickets(ws) {
+  try {
+    if (!ws.userId) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Unauthorized"
+      }));
+    }
+
+    const tickets = await getAllTickets();
+
+    ws.send(JSON.stringify({
+      type: "ALL_TICKETS",
+      payload: tickets
+    }));
+
+  } catch (err) {
+    console.error("GET_ALL_TICKETS error:", err);
+    ws.send(JSON.stringify({
+      type: "ERROR",
+      message: "Failed to fetch tickets"
+    }));
+  }
+}
+
+async function handleGetUserTickets(ws) {
+  try {
+    if (!ws.userId) {
+      return ws.send(JSON.stringify({
+        type: "ERROR",
+        message: "Unauthorized"
+      }));
+    }
+
+    const tickets = await getTicketsByUser(ws.userId);
+
+    ws.send(JSON.stringify({
+      type: "USER_TICKETS",
+      payload: tickets
+    }));
+
+  } catch (err) {
+    console.error("GET_USER_TICKETS error:", err);
+    ws.send(JSON.stringify({
+      type: "ERROR",
+      message: "Failed to fetch tickets"
+    }));
+  }
+}
+
+
+};
+
+
