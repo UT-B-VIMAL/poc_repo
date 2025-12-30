@@ -8,24 +8,25 @@ const router = express.Router();
 /* LOGIN */
 /* ============================= */
 router.post("/login", async (req, res) => {
-  const { email } = req.body;
+  const { username, password } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ message: "Email is required" });
+  // Validation
+  if (!username || !password) {
+    return res.status(400).json({ message: "Username and password are required" });
+  }
+
+  // Static login check (POC only)
+  if (username !== "Admin" || password !== "admin@123") {
+    return res.status(401).json({ message: "Invalid credentials" });
   }
 
   try {
-    const [rows] = await db.execute(
-      "SELECT id, name, email FROM users WHERE email = ?",
-      [email]
-    );
-
-    if (rows.length === 0) {
-      return res.status(401).json({ message: "User not found" });
-    }
-
-    const user = rows[0];
-
+    // Static user object
+    const user = {
+      id: 1,
+      name: "Admin",
+      email: "admin@example.com",
+    };
 
     const token = generateToken({
       userId: user.id,
@@ -47,6 +48,7 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 /* ============================= */
 /* LOGOUT */
