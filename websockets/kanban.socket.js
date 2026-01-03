@@ -86,25 +86,60 @@ module.exports.createServer = function() {
 
   // AUTH + JOIN BOARD
   function authenticateAndJoin(ws, { boardId, token }) {
-    try {
-      if (!token) throw new Error("Token missing");
-      if (isTokenBlacklisted(token)) throw new Error("Token revoked");
-
-      const decoded = verifySocketToken(token);
-      ws.userId = decoded.userId;
-      ws.boardId = boardId;
-
-      if (!boards.has(boardId)) boards.set(boardId, new Map());
-      if (!boards.get(boardId).has(ws.userId)) boards.get(boardId).set(ws.userId, new Set());
-      boards.get(boardId).get(ws.userId).add(ws);
-
-      ws.send(JSON.stringify({ type: "AUTH_SUCCESS", payload: { boardId, userId: ws.userId } }));
-    } catch (err) {
-      console.error("AUTH failed:", err);
-      ws.send(JSON.stringify({ type: "AUTH_FAILED", message: "Invalid or expired token" }));
+  try {
+    if (!token) {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "TOKEN_MISSING",
+        message: "Authentication token missing"
+      }));
       ws.close();
+      return;
     }
+
+    if (isTokenBlacklisted(token)) {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "TOKEN_REVOKED",
+        message: "Token has been revoked"
+      }));
+      ws.close();
+      return;
+    }
+
+    const decoded = verifySocketToken(token); // throws if expired
+    ws.userId = decoded.userId;
+    ws.boardId = boardId;
+
+    if (!boards.has(boardId)) boards.set(boardId, new Map());
+    if (!boards.get(boardId).has(ws.userId)) boards.get(boardId).set(ws.userId, new Set());
+    boards.get(boardId).get(ws.userId).add(ws);
+
+    ws.send(JSON.stringify({
+      type: "AUTH_SUCCESS",
+      payload: { boardId, userId: ws.userId }
+    }));
+
+  } catch (err) {
+    console.error("Kanban AUTH failed:", err);
+
+    if (err.name === "TokenExpiredError") {
+      ws.send(JSON.stringify({
+        type: "AUTH_EXPIRED",
+        message: "Session expired. Please login again."
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "INVALID_TOKEN",
+        message: "Invalid authentication token"
+      }));
+    }
+
+    ws.close();
   }
+}
+
 
   // CLEANUP
   function cleanup(ws) {
