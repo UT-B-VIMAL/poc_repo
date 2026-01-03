@@ -10,6 +10,8 @@ const authRoutes = require("./routes/auth.routes");
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+app.use("/uploads", express.static("uploads"));
+
 app.use("/api/auth", authRoutes);
 
 const server = http.createServer(app);

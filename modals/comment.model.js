@@ -32,8 +32,8 @@ async function createComment({ taskId, userId, message }) {
       [
         taskId,
         userId,
-        null,        // old_value is NULL for new comment
-        message      // new_value is the comment text
+        null,        
+        message      
       ]
     );
 
@@ -92,7 +92,46 @@ async function getCommentsByTask(taskId) {
   return rows;
 }
 
+async function createCommentAttachment({
+  commentId,
+  taskId,
+  userId,
+  fileType,
+  fileUrl,
+}) {
+  const [res] = await db.execute(
+    `
+    INSERT INTO comment_attachments
+      (comment_id, file_type, file_url)
+    VALUES (?, ?, ?)
+    `,
+    [commentId, fileType, fileUrl]
+  );
+
+  const attachmentId = res.insertId;
+
+  await db.execute(
+    `
+    INSERT INTO ticket_activities
+      (ticket_id, user_id, activity_type, old_value, new_value, created_at)
+    VALUES
+      (?, ?, 'comment_attachment_added', NULL, ?, NOW())
+    `,
+    [taskId, userId, JSON.stringify({ fileType, fileUrl })]
+  );
+
+  return {
+    id: attachmentId,
+    comment_id: commentId,
+    file_type: fileType,
+    file_url: fileUrl,
+    created_at: new Date(),
+  };
+}
+
+
 module.exports = {
   createComment,
   getCommentsByTask,
+  createCommentAttachment,
 };
