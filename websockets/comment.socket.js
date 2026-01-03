@@ -1,9 +1,11 @@
 const WebSocket = require("ws");
 const { verifySocketToken } = require("../utils/jwt");
 const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
-const { createComment, getCommentsByTask } = require("../modals/comment.model");
+const { createComment, getCommentsByTask,  } = require("../modals/comment.model");
+const { saveAttachment } = require("../utils/attachmentUploader");
+const db = require("../utils/db");
 
-module.exports.createServer = function() {
+module.exports.createServer = function () {
   const wss = new WebSocket.Server({ noServer: true });
   const tasks = new Map(); // taskId => Map(userId => Set(ws))
 
@@ -13,7 +15,7 @@ module.exports.createServer = function() {
     ws.taskId = null;
 
     console.log("💬 Comment WS connected");
-     ws.isCommentSocket = true;
+    ws.isCommentSocket = true;
 
     ws.on("pong", () => ws.isAlive = true);
 
@@ -39,27 +41,32 @@ module.exports.createServer = function() {
   }, 30000);
 
   wss.on("close", () => clearInterval(interval));
-async function handleMessage(ws, { type, payload }) {
-  console.log("📨 WS TYPE:", type);
+  async function handleMessage(ws, { type, payload }) {
+    console.log("📨 WS TYPE:", type);
 
-  if (!ws.isCommentSocket) return;
+    if (!ws.isCommentSocket) return;
 
-  if (type === "JOIN_TASK") return authenticateAndJoin(ws, payload);
+    if (type === "JOIN_TASK") return authenticateAndJoin(ws, payload);
 
-  if (!ws.userId || !ws.taskId) {
-    console.log("❌ Unauthorized socket");
-    return ws.close(4001, "Unauthorized");
+    if (!ws.userId || !ws.taskId) {
+      console.log("❌ Unauthorized socket");
+      return ws.close(4001, "Unauthorized");
+    }
+
+    switch (type) {
+      case "GET_COMMENTS":
+        return handleGetComments(ws);
+
+      case "CREATE_COMMENT":
+        return handleCreateComment(ws, payload);
+
+      case "UPLOAD_ATTACHMENTS":
+        return handleUploadAttachments(ws, payload);
+
+      default:
+        console.warn("Unknown WS type:", type);
+    }
   }
-
-  switch (type) {
-    case "GET_COMMENTS":
-      console.log("📥 GET_COMMENTS triggered");
-      return handleGetComments(ws);
-
-    case "CREATE_COMMENT":
-      return handleCreateComment(ws, payload);
-  }
-}
 
 
   function authenticateAndJoin(ws, { taskId, token }) {
@@ -133,6 +140,51 @@ async function handleMessage(ws, { type, payload }) {
       ws.send(JSON.stringify({ type: "ERROR", message: "Failed to create comment" }));
     }
   }
+
+async function handleUploadAttachments(ws, payload) {
+  const { commentId, files } = payload;
+
+  if (!commentId || !Array.isArray(files) || files.length === 0) {
+    return;
+  }
+
+  const userName = await getUserNameById(ws.userId);
+  const activities = [];
+
+  for (const file of files) {
+    const attachment = await saveAttachment({
+      commentId,
+      taskId: ws.taskId,
+      userId: ws.userId,
+      file
+    });
+
+    // 🔥 CONVERT ATTACHMENT → COMMENT-LIKE ACTIVITY
+    activities.push({
+      id: `attachment-${attachment.id}`, // unique key
+      ticket_id: ws.taskId,
+      user_id: ws.userId,
+      user_name: userName,
+      message: JSON.stringify({
+        fileType: attachment.file_type,
+        fileUrl: attachment.file_url
+      }),
+      created_at: attachment.created_at
+    });
+  }
+
+  // 🔥 BROADCAST TO ALL USERS
+  broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
+}
+async function getUserNameById(userId) {
+  const [[row]] = await db.execute(
+    "SELECT name FROM users WHERE id = ?",
+    [userId]
+  );
+  return row?.name || "Unknown";
+}
+
+
 
   return wss;
 };
