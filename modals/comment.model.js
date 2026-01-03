@@ -92,24 +92,25 @@ async function getCommentsByTask(taskId) {
   return rows;
 }
 
-async function createCommentAttachment({
-  commentId,
+async function createTicketAttachment({
   taskId,
   userId,
   fileType,
   fileUrl,
 }) {
+  // 1. Save attachment
   const [res] = await db.execute(
     `
     INSERT INTO comment_attachments
-      (comment_id, file_type, file_url)
+      (ticket_id, file_type, file_url)
     VALUES (?, ?, ?)
     `,
-    [commentId, fileType, fileUrl]
+    [taskId, fileType, fileUrl]
   );
 
   const attachmentId = res.insertId;
 
+  // 2. Log activity
   await db.execute(
     `
     INSERT INTO ticket_activities
@@ -120,9 +121,9 @@ async function createCommentAttachment({
     [taskId, userId, JSON.stringify({ fileType, fileUrl })]
   );
 
+  // 3. Return RAW attachment data
   return {
-    id: attachmentId,
-    comment_id: commentId,
+    id: attachmentId,      // ✅ numeric only
     file_type: fileType,
     file_url: fileUrl,
     created_at: new Date(),
@@ -130,8 +131,10 @@ async function createCommentAttachment({
 }
 
 
+
+
 module.exports = {
   createComment,
   getCommentsByTask,
-  createCommentAttachment,
+  createTicketAttachment,
 };
