@@ -39,14 +39,80 @@ exports.deleteTicket = async ({ id }) => {
 };
 
 /* MOVE */
-exports.moveTicket = async ({ id, status_id, userId }) => {
-  await db.execute(
-    `UPDATE tickets SET status_id = ?, updated_by = ? WHERE id = ?`,
-    [status_id, userId, id]
-  );
+// exports.moveTicket = async ({ id, status_id, userId }) => {
+//   await db.execute(
+//     `UPDATE tickets SET status_id = ?, updated_by = ? WHERE id = ?`,
+//     [status_id, userId, id]
+//   );
 
-  return { id, status_id, updated_by: userId };
+//   return { id, status_id, updated_by: userId };
+// };
+
+const STATUS_MAP = {
+  1: "Bug Found",
+  2: "In progress",
+  3: "In Review",
+  4: "On Hold",
+  5: "Reopen",
+  6: "Closed",
 };
+
+exports.moveTicket = async ({ id, status_id, userId }) => {
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    // 1️⃣ Get old status id
+    const [[oldTicket]] = await conn.execute(
+      `SELECT status_id FROM tickets WHERE id = ?`,
+      [id]
+    );
+
+    const oldStatusId = oldTicket?.status_id ?? null;
+
+    // Map IDs to names
+    const oldStatusName = STATUS_MAP[oldStatusId] ?? "Unknown";
+    const newStatusName = STATUS_MAP[status_id] ?? "Unknown";
+
+    // 2️⃣ Update ticket status
+    await conn.execute(
+      `UPDATE tickets SET status_id = ?, updated_by = ? WHERE id = ?`,
+      [status_id, userId, id]
+    );
+
+    // 3️⃣ Insert activity log with readable names
+    await conn.execute(
+      `
+      INSERT INTO ticket_activities
+        (ticket_id, user_id, activity_type, old_value, new_value, created_at)
+      VALUES
+        (?, ?, 'status_changed', ?, ?, NOW())
+      `,
+      [
+        id,
+        userId,
+        oldStatusName,
+        newStatusName
+      ]
+    );
+
+    await conn.commit();
+
+    return {
+      id,
+      status_id,
+      updated_by: userId,
+    };
+
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+};
+
 
 exports.getAllTickets = async () => {
   const [rows] = await db.execute(
