@@ -78,6 +78,7 @@ async function getCommentsByTask(taskId) {
       c.id,
       c.ticket_id,
       c.user_id,
+      c.old_value AS old_message,
       c.new_value AS message,
       c.created_at,
       u.name AS user_name
