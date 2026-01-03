@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { createCommentAttachment } = require("../modals/comment.model");
+const { createTicketAttachment } = require("../modals/comment.model");
 
 async function saveAttachment({ commentId, taskId, userId, file }) {
   const isImage = file.type?.startsWith("image/");
@@ -26,8 +26,7 @@ async function saveAttachment({ commentId, taskId, userId, file }) {
   const buffer = Buffer.from(file.data, "base64");
   fs.writeFileSync(filePath, buffer);
 
-  return await createCommentAttachment({
-    commentId,
+  return await createTicketAttachment({
     taskId,
     userId,
     fileType: isImage ? "image" : "video",

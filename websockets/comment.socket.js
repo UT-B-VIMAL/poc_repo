@@ -142,26 +142,31 @@ module.exports.createServer = function () {
   }
 
 async function handleUploadAttachments(ws, payload) {
-  const { commentId, files } = payload;
+  const { files } = payload;
 
-  if (!commentId || !Array.isArray(files) || files.length === 0) {
+  if (!Array.isArray(files) || files.length === 0) {
     return;
   }
 
   const userName = await getUserNameById(ws.userId);
   const activities = [];
 
+  // 🔥 INTERNAL COMMENT ID (NOT FROM FRONTEND)
+  const commentId = Date.now(); // stable + unique enough for file naming
+
   for (const file of files) {
     const attachment = await saveAttachment({
-      commentId,
+      commentId,              // internal only
       taskId: ws.taskId,
       userId: ws.userId,
       file
     });
 
-    // 🔥 CONVERT ATTACHMENT → COMMENT-LIKE ACTIVITY
+    console.log("🗂️ Saved attachment:", attachment);
+
+    // ❌ RESPONSE FORMAT NOT CHANGED
     activities.push({
-      id: `attachment-${attachment.id}`, // unique key
+      id: `attachment-${attachment.id}`,
       ticket_id: ws.taskId,
       user_id: ws.userId,
       user_name: userName,
@@ -173,9 +178,9 @@ async function handleUploadAttachments(ws, payload) {
     });
   }
 
-  // 🔥 BROADCAST TO ALL USERS
   broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
 }
+
 async function getUserNameById(userId) {
   const [[row]] = await db.execute(
     "SELECT name FROM users WHERE id = ?",
