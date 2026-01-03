@@ -69,26 +69,62 @@ module.exports.createServer = function () {
   }
 
 
-  function authenticateAndJoin(ws, { taskId, token }) {
-    try {
-      if (!token) throw new Error("Token missing");
-      if (isTokenBlacklisted(token)) throw new Error("Token revoked");
-
-      const decoded = verifySocketToken(token);
-      ws.userId = decoded.userId;
-      ws.taskId = taskId;
-
-      if (!tasks.has(taskId)) tasks.set(taskId, new Map());
-      if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
-      tasks.get(taskId).get(ws.userId).add(ws);
-
-      ws.send(JSON.stringify({ type: "AUTH_SUCCESS", payload: { taskId, userId: ws.userId } }));
-    } catch (err) {
-      console.error("Comment AUTH failed:", err);
-      ws.send(JSON.stringify({ type: "AUTH_FAILED", message: "Invalid or expired token" }));
+function authenticateAndJoin(ws, { taskId, token }) {
+  try {
+    if (!token) {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "TOKEN_MISSING",
+        message: "Authentication token missing"
+      }));
       ws.close();
+      return;
     }
+
+    if (isTokenBlacklisted(token)) {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "TOKEN_REVOKED",
+        message: "Token has been revoked"
+      }));
+      ws.close();
+      return;
+    }
+
+    const decoded = verifySocketToken(token); // throws on expiry
+    ws.userId = decoded.userId;
+    ws.taskId = taskId;
+
+    if (!tasks.has(taskId)) tasks.set(taskId, new Map());
+    if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
+    tasks.get(taskId).get(ws.userId).add(ws);
+
+    ws.send(JSON.stringify({
+      type: "AUTH_SUCCESS",
+      payload: { taskId, userId: ws.userId }
+    }));
+
+  } catch (err) {
+    console.error("Comment AUTH failed:", err);
+
+    // 🔥 CRITICAL: distinguish expired token
+    if (err.name === "TokenExpiredError") {
+      ws.send(JSON.stringify({
+        type: "AUTH_EXPIRED",
+        message: "Session expired. Please login again."
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: "AUTH_FAILED",
+        reason: "INVALID_TOKEN",
+        message: "Invalid authentication token"
+      }));
+    }
+
+    ws.close();
   }
+}
+
 
   function cleanup(ws) {
     const { taskId, userId } = ws;
