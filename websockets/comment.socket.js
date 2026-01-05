@@ -2,6 +2,9 @@ const WebSocket = require("ws");
 const { verifySocketToken } = require("../utils/jwt");
 const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
 const { createComment, getCommentsByTask,  } = require("../modals/comment.model");
+const {
+  moveTicket,
+} = require("../modals/ticket.model");
 const { saveAttachment } = require("../utils/attachmentUploader");
 const db = require("../utils/db");
 
@@ -63,11 +66,29 @@ module.exports.createServer = function () {
       case "UPLOAD_ATTACHMENTS":
         return handleUploadAttachments(ws, payload);
 
+       case "STATUS_CHANGED":
+        return handleMoveCard(ws, payload);
+         
+
       default:
         console.warn("Unknown WS type:", type);
     }
   }
 
+
+  async function handleMoveCard(ws, payload) {
+    
+    try {
+      const { id, status_id } = payload;
+      
+      if (!id || status_id === undefined) return ws.send(JSON.stringify({ type: "ERROR", message: "Missing move data" }));
+
+      const card = await moveTicket({ id, status_id, userId: ws.userId });
+      
+      broadcast(ws, "CARD_MOVED", card);
+  
+    } catch (err) { console.error(err); ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" })); }
+  }
 
 function authenticateAndJoin(ws, { taskId, token }) {
   try {
