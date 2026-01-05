@@ -63,25 +63,39 @@ exports.moveTicket = async ({ id, status_id, userId }) => {
   try {
     await conn.beginTransaction();
 
-    // 1️⃣ Get old status id
+    // 1️⃣ Get old ticket status
     const [[oldTicket]] = await conn.execute(
       `SELECT status_id FROM tickets WHERE id = ?`,
       [id]
     );
 
-    const oldStatusId = oldTicket?.status_id ?? null;
+    if (!oldTicket) {
+      throw new Error("Ticket not found");
+    }
 
-    // Map IDs to names
+    const oldStatusId = oldTicket.status_id;
+
+    // 2️⃣ Get user name
+    const [[user]] = await conn.execute(
+      `SELECT name FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    const userName = user?.name ?? "Unknown User";
+
+    // Map IDs → readable names
     const oldStatusName = STATUS_MAP[oldStatusId] ?? "Unknown";
     const newStatusName = STATUS_MAP[status_id] ?? "Unknown";
 
-    // 2️⃣ Update ticket status
+    // 3️⃣ Update ticket
     await conn.execute(
-      `UPDATE tickets SET status_id = ?, updated_by = ? WHERE id = ?`,
+      `UPDATE tickets
+       SET status_id = ?, updated_by = ?
+       WHERE id = ?`,
       [status_id, userId, id]
     );
 
-    // 3️⃣ Insert activity log with readable names
+    // 4️⃣ Insert activity log
     await conn.execute(
       `
       INSERT INTO ticket_activities
@@ -89,20 +103,19 @@ exports.moveTicket = async ({ id, status_id, userId }) => {
       VALUES
         (?, ?, 'status_changed', ?, ?, NOW())
       `,
-      [
-        id,
-        userId,
-        oldStatusName,
-        newStatusName
-      ]
+      [id, userId, oldStatusName, newStatusName]
     );
 
     await conn.commit();
 
+    // ✅ Return payload for UI / WebSocket
     return {
       id,
       status_id,
       updated_by: userId,
+      user_name: userName,
+      old_message: oldStatusName,
+      message: newStatusName
     };
 
   } catch (err) {
@@ -112,6 +125,7 @@ exports.moveTicket = async ({ id, status_id, userId }) => {
     conn.release();
   }
 };
+
 
 
 exports.getAllTickets = async () => {
