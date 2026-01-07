@@ -188,6 +188,10 @@ module.exports.createServer = function() {
 
       const card = await updateTicket({ id, title, status_id, userId: ws.userId });
       broadcast(ws, "CARD_UPDATED", card);
+      const tickets = await getAllTickets();
+
+    // 🔥 SEND TO ALL USERS
+    broadcast(ws, "ALL_TICKETS", tickets);
     } catch (err) { console.error(err); ws.send(JSON.stringify({ type: "ERROR", message: "Update failed" })); }
   }
 
