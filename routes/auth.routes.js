@@ -71,4 +71,38 @@ router.post("/logout", (req, res) => {
   res.json({ message: "Logged out successfully" });
 });
 
+router.get("/list", async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      "SELECT id, name, email FROM users"
+    );
+    res.json({ users: rows });
+  } catch (err) {
+    console.error("Error fetching users:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/search", async (req, res) => {
+  try {
+    const search = req.query.q || "";
+
+    const [rows] = await db.execute(
+      `
+      SELECT id, name, email
+      FROM users
+      WHERE name LIKE ?
+      ORDER BY name
+      LIMIT 10
+      `,
+      [`%${search}%`]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("User search error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 module.exports = router;
