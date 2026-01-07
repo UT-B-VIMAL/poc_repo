@@ -139,7 +139,7 @@ exports.getAllTickets = async () => {
        created_at,
        updated_at
      FROM tickets
-     ORDER BY id ASC`
+     ORDER BY updated_at DESC`
   );
 
   return rows;
