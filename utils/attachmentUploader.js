@@ -1,6 +1,9 @@
 const fs = require("fs");
 const path = require("path");
-const { createTicketAttachment } = require("../modals/comment.model");
+const commentModel = require("../modals/comment.model");
+console.log("📌 commentModel:", commentModel);
+const { createTicketAttachment } = commentModel;
+console.log("📌 createTicketAttachment:", createTicketAttachment);
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
