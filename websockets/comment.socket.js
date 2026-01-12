@@ -1,7 +1,7 @@
 const WebSocket = require("ws");
 const { verifySocketToken } = require("../utils/jwt");
 const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
-const { createComment, getCommentsByTask,  } = require("../modals/comment.model");
+const { createComment, getCommentsByTask, updateComment, deleteComment, } = require("../modals/comment.model");
 const {
   moveTicket,
 } = require("../modals/ticket.model");
@@ -63,12 +63,19 @@ module.exports.createServer = function () {
       case "CREATE_COMMENT":
         return handleCreateComment(ws, payload);
 
+      case "EDIT_COMMENT":
+        return handleEditComment(ws, payload);
+
+      case "DELETE_COMMENT":
+        return handleDeleteComment(ws, payload);
+
+
       case "UPLOAD_ATTACHMENTS":
         return handleUploadAttachments(ws, payload);
 
-       case "STATUS_CHANGED":
+      case "STATUS_CHANGED":
         return handleMoveCard(ws, payload);
-         
+
 
       default:
         console.warn("Unknown WS type:", type);
@@ -77,74 +84,74 @@ module.exports.createServer = function () {
 
 
   async function handleMoveCard(ws, payload) {
-    
+
     try {
       const { id, status_id } = payload;
-      
+
       if (!id || status_id === undefined) return ws.send(JSON.stringify({ type: "ERROR", message: "Missing move data" }));
 
       const card = await moveTicket({ id, status_id, userId: ws.userId });
-      
+
       broadcast(ws, "CARD_MOVED", card);
-  
+
     } catch (err) { console.error(err); ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" })); }
   }
 
-function authenticateAndJoin(ws, { taskId, token }) {
-  try {
-    if (!token) {
+  function authenticateAndJoin(ws, { taskId, token }) {
+    try {
+      if (!token) {
+        ws.send(JSON.stringify({
+          type: "AUTH_FAILED",
+          reason: "TOKEN_MISSING",
+          message: "Authentication token missing"
+        }));
+        ws.close();
+        return;
+      }
+
+      if (isTokenBlacklisted(token)) {
+        ws.send(JSON.stringify({
+          type: "AUTH_FAILED",
+          reason: "TOKEN_REVOKED",
+          message: "Token has been revoked"
+        }));
+        ws.close();
+        return;
+      }
+
+      const decoded = verifySocketToken(token); // throws on expiry
+      ws.userId = decoded.userId;
+      ws.taskId = taskId;
+
+      if (!tasks.has(taskId)) tasks.set(taskId, new Map());
+      if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
+      tasks.get(taskId).get(ws.userId).add(ws);
+
       ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "TOKEN_MISSING",
-        message: "Authentication token missing"
+        type: "AUTH_SUCCESS",
+        payload: { taskId, userId: ws.userId }
       }));
+
+    } catch (err) {
+      console.error("Comment AUTH failed:", err);
+
+      // 🔥 CRITICAL: distinguish expired token
+      if (err.name === "TokenExpiredError") {
+        ws.send(JSON.stringify({
+          type: "AUTH_EXPIRED",
+          message: "Session expired. Please login again."
+        }));
+      } else {
+        ws.send(JSON.stringify({
+          type: "AUTH_FAILED",
+          reason: "INVALID_TOKEN",
+          message: "Invalid authentication token"
+        }));
+      }
+
       ws.close();
-      return;
     }
-
-    if (isTokenBlacklisted(token)) {
-      ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "TOKEN_REVOKED",
-        message: "Token has been revoked"
-      }));
-      ws.close();
-      return;
-    }
-
-    const decoded = verifySocketToken(token); // throws on expiry
-    ws.userId = decoded.userId;
-    ws.taskId = taskId;
-
-    if (!tasks.has(taskId)) tasks.set(taskId, new Map());
-    if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
-    tasks.get(taskId).get(ws.userId).add(ws);
-
-    ws.send(JSON.stringify({
-      type: "AUTH_SUCCESS",
-      payload: { taskId, userId: ws.userId }
-    }));
-
-  } catch (err) {
-    console.error("Comment AUTH failed:", err);
-
-    // 🔥 CRITICAL: distinguish expired token
-    if (err.name === "TokenExpiredError") {
-      ws.send(JSON.stringify({
-        type: "AUTH_EXPIRED",
-        message: "Session expired. Please login again."
-      }));
-    } else {
-      ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "INVALID_TOKEN",
-        message: "Invalid authentication token"
-      }));
-    }
-
-    ws.close();
   }
-}
 
 
   function cleanup(ws) {
@@ -198,53 +205,89 @@ function authenticateAndJoin(ws, { taskId, token }) {
     }
   }
 
-async function handleUploadAttachments(ws, payload) {
-  const { files } = payload;
+  async function handleEditComment(ws, payload) {
+    try {
+      const { commentId, message } = payload;
+      if (!commentId || !message) return;
 
-  if (!Array.isArray(files) || files.length === 0) {
-    return;
+      const updated = await updateComment({
+        commentId,
+        userId: ws.userId,
+        message,
+      });
+
+      broadcast(ws, "COMMENT_UPDATED", updated);
+    } catch (err) {
+      console.error(err);
+      ws.send(JSON.stringify({ type: "ERROR", message: "Edit failed" }));
+    }
   }
 
-  const userName = await getUserNameById(ws.userId);
-  const activities = [];
+  async function handleDeleteComment(ws, payload) {
+    try {
+      const { commentId } = payload;
+      if (!commentId) return;
 
-  // 🔥 INTERNAL COMMENT ID (NOT FROM FRONTEND)
-  const commentId = Date.now(); // stable + unique enough for file naming
+      await deleteComment({
+        commentId,
+        userId: ws.userId,
+      });
 
-  for (const file of files) {
-    const attachment = await saveAttachment({
-      commentId,              // internal only
-      taskId: ws.taskId,
-      userId: ws.userId,
-      file
-    });
-
-    console.log("🗂️ Saved attachment:", attachment);
-
-    // ❌ RESPONSE FORMAT NOT CHANGED
-    activities.push({
-      id: `attachment-${attachment.id}`,
-      ticket_id: ws.taskId,
-      user_id: ws.userId,
-      user_name: userName,
-      message: JSON.stringify({
-        fileType: attachment.file_type,
-        fileUrl: attachment.file_url
-      }),
-      created_at: attachment.created_at
-    });
+      broadcast(ws, "COMMENT_DELETED", { id: commentId });
+    } catch (err) {
+      console.error(err);
+      ws.send(JSON.stringify({ type: "ERROR", message: "Delete failed" }));
+    }
   }
 
-  broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
-}
 
-async function getUserNameById(userId) {
-  const [[row]] = await db.execute(
-    "SELECT name FROM users WHERE id = ?",
-    [userId]
-  );
-  return row?.name || "Unknown";
-}
+  async function handleUploadAttachments(ws, payload) {
+    const { files } = payload;
+
+    if (!Array.isArray(files) || files.length === 0) {
+      return;
+    }
+
+    const userName = await getUserNameById(ws.userId);
+    const activities = [];
+
+    // 🔥 INTERNAL COMMENT ID (NOT FROM FRONTEND)
+    const commentId = Date.now(); // stable + unique enough for file naming
+
+    for (const file of files) {
+      const attachment = await saveAttachment({
+        commentId,              // internal only
+        taskId: ws.taskId,
+        userId: ws.userId,
+        file
+      });
+
+      console.log("🗂️ Saved attachment:", attachment);
+
+      // ❌ RESPONSE FORMAT NOT CHANGED
+      activities.push({
+        id: `attachment-${attachment.id}`,
+        ticket_id: ws.taskId,
+        user_id: ws.userId,
+        user_name: userName,
+        message: JSON.stringify({
+          fileType: attachment.file_type,
+          fileUrl: attachment.file_url
+        }),
+        created_at: attachment.created_at
+      });
+    }
+
+    broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
+  }
+
+  async function getUserNameById(userId) {
+    const [[row]] = await db.execute(
+      "SELECT name FROM users WHERE id = ?",
+      [userId]
+    );
+    return row?.name || "Unknown";
+  }
 
 
 
