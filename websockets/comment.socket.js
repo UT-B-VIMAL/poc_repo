@@ -1,10 +1,8 @@
 const WebSocket = require("ws");
 const { verifySocketToken } = require("../utils/jwt");
 const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
-const { createComment, getCommentsByTask,  } = require("../modals/comment.model");
-const {
-  moveTicket,
-} = require("../modals/ticket.model");
+const { createComment, getCommentsByTask } = require("../modals/comment.model");
+const { moveTicket, updateTicketTitle, updateTicketAssignee, updateTicketSeverity, getAssigneesList  } = require("../modals/ticket.model");
 const { saveAttachment } = require("../utils/attachmentUploader");
 const db = require("../utils/db");
 
@@ -20,7 +18,7 @@ module.exports.createServer = function () {
     console.log("💬 Comment WS connected");
     ws.isCommentSocket = true;
 
-    ws.on("pong", () => ws.isAlive = true);
+    ws.on("pong", () => (ws.isAlive = true));
 
     ws.on("message", async (raw) => {
       try {
@@ -32,11 +30,14 @@ module.exports.createServer = function () {
     });
 
     ws.on("close", () => cleanup(ws));
-    ws.on("error", (err) => { console.error(err); cleanup(ws); });
+    ws.on("error", (err) => {
+      console.error(err);
+      cleanup(ws);
+    });
   });
 
   const interval = setInterval(() => {
-    wss.clients.forEach(ws => {
+    wss.clients.forEach((ws) => {
       if (!ws.isAlive) return ws.terminate();
       ws.isAlive = false;
       ws.ping();
@@ -66,86 +67,128 @@ module.exports.createServer = function () {
       case "UPLOAD_ATTACHMENTS":
         return handleUploadAttachments(ws, payload);
 
-       case "STATUS_CHANGED":
+      case "STATUS_CHANGED":
         return handleMoveCard(ws, payload);
-         
+
+      case "TITLE_CHANGED":
+        return handleTitleChange(ws, payload);
+
+      case "ASSIGNEE_CHANGED":
+        return handleAssigneeChange(ws, payload);
+
+      case "SEVERITY_CHANGED":
+        return handleSeverityChange(ws, payload);
+
+      case "ASSIGNEES_LIST":
+        return handleAssigneesList(ws, payload);
 
       default:
         console.warn("Unknown WS type:", type);
     }
   }
 
-
   async function handleMoveCard(ws, payload) {
-    
     try {
       const { id, status_id } = payload;
-      
-      if (!id || status_id === undefined) return ws.send(JSON.stringify({ type: "ERROR", message: "Missing move data" }));
+
+      if (!id || status_id === undefined)
+        return ws.send(
+          JSON.stringify({ type: "ERROR", message: "Missing move data" })
+        );
 
       const card = await moveTicket({ id, status_id, userId: ws.userId });
-      
+
       broadcast(ws, "CARD_MOVED", card);
-  
-    } catch (err) { console.error(err); ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" })); }
+    } catch (err) {
+      console.error(err);
+      ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" }));
+    }
   }
 
-function authenticateAndJoin(ws, { taskId, token }) {
-  try {
-    if (!token) {
-      ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "TOKEN_MISSING",
-        message: "Authentication token missing"
-      }));
-      ws.close();
-      return;
-    }
-
-    if (isTokenBlacklisted(token)) {
-      ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "TOKEN_REVOKED",
-        message: "Token has been revoked"
-      }));
-      ws.close();
-      return;
-    }
-
-    const decoded = verifySocketToken(token); // throws on expiry
-    ws.userId = decoded.userId;
-    ws.taskId = taskId;
-
-    if (!tasks.has(taskId)) tasks.set(taskId, new Map());
-    if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
-    tasks.get(taskId).get(ws.userId).add(ws);
-
-    ws.send(JSON.stringify({
-      type: "AUTH_SUCCESS",
-      payload: { taskId, userId: ws.userId }
-    }));
-
-  } catch (err) {
-    console.error("Comment AUTH failed:", err);
-
-    // 🔥 CRITICAL: distinguish expired token
-    if (err.name === "TokenExpiredError") {
-      ws.send(JSON.stringify({
-        type: "AUTH_EXPIRED",
-        message: "Session expired. Please login again."
-      }));
-    } else {
-      ws.send(JSON.stringify({
-        type: "AUTH_FAILED",
-        reason: "INVALID_TOKEN",
-        message: "Invalid authentication token"
-      }));
-    }
-
-    ws.close();
-  }
+  async function handleTitleChange(ws, payload) {
+  const card = await updateTicketTitle({ ...payload, userId: ws.userId });
+  broadcast(ws, "TITLE_CHANGED", card);
+}
+  async function handleAssigneesList(ws, payload) {
+  const card = await getAssigneesList({ ...payload, userId: ws.userId });
+  broadcast(ws, "ASSIGNEES_LIST", card);
 }
 
+async function handleAssigneeChange(ws, payload) {
+  const card = await updateTicketAssignee({ ...payload, userId: ws.userId });
+  broadcast(ws, "ASSIGNEE_CHANGED", card);
+}
+
+async function handleSeverityChange(ws, payload) {
+  const card = await updateTicketSeverity({ ...payload, userId: ws.userId });
+  broadcast(ws, "SEVERITY_CHANGED", card);
+}
+
+  function authenticateAndJoin(ws, { taskId, token }) {
+    try {
+      if (!token) {
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "TOKEN_MISSING",
+            message: "Authentication token missing",
+          })
+        );
+        ws.close();
+        return;
+      }
+
+      if (isTokenBlacklisted(token)) {
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "TOKEN_REVOKED",
+            message: "Token has been revoked",
+          })
+        );
+        ws.close();
+        return;
+      }
+
+      const decoded = verifySocketToken(token); // throws on expiry
+      ws.userId = decoded.userId;
+      ws.taskId = taskId;
+
+      if (!tasks.has(taskId)) tasks.set(taskId, new Map());
+      if (!tasks.get(taskId).has(ws.userId))
+        tasks.get(taskId).set(ws.userId, new Set());
+      tasks.get(taskId).get(ws.userId).add(ws);
+
+      ws.send(
+        JSON.stringify({
+          type: "AUTH_SUCCESS",
+          payload: { taskId, userId: ws.userId },
+        })
+      );
+    } catch (err) {
+      console.error("Comment AUTH failed:", err);
+
+      // 🔥 CRITICAL: distinguish expired token
+      if (err.name === "TokenExpiredError") {
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_EXPIRED",
+            message: "Session expired. Please login again.",
+          })
+        );
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "INVALID_TOKEN",
+            message: "Invalid authentication token",
+          })
+        );
+      }
+
+      ws.close();
+    }
+  }
 
   function cleanup(ws) {
     const { taskId, userId } = ws;
@@ -167,8 +210,8 @@ function authenticateAndJoin(ws, { taskId, token }) {
     if (!task) return;
 
     const message = JSON.stringify({ type, payload });
-    task.forEach(sockets => {
-      sockets.forEach(client => {
+    task.forEach((sockets) => {
+      sockets.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) client.send(message);
       });
     });
@@ -181,72 +224,80 @@ function authenticateAndJoin(ws, { taskId, token }) {
       ws.send(JSON.stringify({ type: "COMMENTS_LIST", payload: comments }));
     } catch (err) {
       console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Failed to load comments" }));
+      ws.send(
+        JSON.stringify({ type: "ERROR", message: "Failed to load comments" })
+      );
     }
   }
 
   async function handleCreateComment(ws, payload) {
     try {
       const { message } = payload;
-      if (!message) return ws.send(JSON.stringify({ type: "ERROR", message: "Message is required" }));
+      if (!message)
+        return ws.send(
+          JSON.stringify({ type: "ERROR", message: "Message is required" })
+        );
 
-      const comment = await createComment({ taskId: ws.taskId, userId: ws.userId, message });
+      const comment = await createComment({
+        taskId: ws.taskId,
+        userId: ws.userId,
+        message,
+      });
       broadcast(ws, "COMMENT_CREATED", comment);
     } catch (err) {
       console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Failed to create comment" }));
+      ws.send(
+        JSON.stringify({ type: "ERROR", message: "Failed to create comment" })
+      );
     }
   }
 
-async function handleUploadAttachments(ws, payload) {
-  const { files } = payload;
+  async function handleUploadAttachments(ws, payload) {
+    const { files } = payload;
 
-  if (!Array.isArray(files) || files.length === 0) {
-    return;
+    if (!Array.isArray(files) || files.length === 0) {
+      return;
+    }
+
+    const userName = await getUserNameById(ws.userId);
+    const activities = [];
+
+    // 🔥 INTERNAL COMMENT ID (NOT FROM FRONTEND)
+    const commentId = Date.now(); // stable + unique enough for file naming
+
+    for (const file of files) {
+      const attachment = await saveAttachment({
+        commentId, // internal only
+        taskId: ws.taskId,
+        userId: ws.userId,
+        file,
+      });
+
+      console.log("🗂️ Saved attachment:", attachment);
+
+      // ❌ RESPONSE FORMAT NOT CHANGED
+      activities.push({
+        id: `attachment-${attachment.id}`,
+        ticket_id: ws.taskId,
+        user_id: ws.userId,
+        user_name: userName,
+        message: JSON.stringify({
+          fileType: attachment.file_type,
+          fileUrl: attachment.file_url,
+        }),
+        created_at: attachment.created_at,
+      });
+    }
+
+    broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
   }
 
-  const userName = await getUserNameById(ws.userId);
-  const activities = [];
-
-  // 🔥 INTERNAL COMMENT ID (NOT FROM FRONTEND)
-  const commentId = Date.now(); // stable + unique enough for file naming
-
-  for (const file of files) {
-    const attachment = await saveAttachment({
-      commentId,              // internal only
-      taskId: ws.taskId,
-      userId: ws.userId,
-      file
-    });
-
-    console.log("🗂️ Saved attachment:", attachment);
-
-    // ❌ RESPONSE FORMAT NOT CHANGED
-    activities.push({
-      id: `attachment-${attachment.id}`,
-      ticket_id: ws.taskId,
-      user_id: ws.userId,
-      user_name: userName,
-      message: JSON.stringify({
-        fileType: attachment.file_type,
-        fileUrl: attachment.file_url
-      }),
-      created_at: attachment.created_at
-    });
+  async function getUserNameById(userId) {
+    const [[row]] = await db.execute("SELECT name FROM users WHERE id = ?", [
+      userId,
+    ]);
+    return row?.name || "Unknown";
   }
-
-  broadcast(ws, "ATTACHMENTS_UPLOADED", activities);
-}
-
-async function getUserNameById(userId) {
-  const [[row]] = await db.execute(
-    "SELECT name FROM users WHERE id = ?",
-    [userId]
-  );
-  return row?.name || "Unknown";
-}
-
-
 
   return wss;
 };

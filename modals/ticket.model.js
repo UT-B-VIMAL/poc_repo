@@ -21,12 +21,15 @@ exports.createTicket = async ({
 };
 
 /* UPDATE */
-exports.updateTicket = async ({ id, title, status_id, userId }) => {
+exports.updateTicket = async ({ id, title, status_id, userId, assigneeId, severity,infotag_name,infotag_color }) => {
   await db.execute(
     `UPDATE tickets
-     SET title = ?, status_id = ?, updated_by = ?
+     SET title = ?, status_id = ?, updated_by = ?, assignee_id = ?,
+       severity = ?,
+       infotag_name = ?,
+       infotag_color = ?,
      WHERE id = ?`,
-    [title, status_id, userId, id]
+    [title, status_id, userId, assigneeId, severity,infotag_name,infotag_color, id]
   );
 
   return { id, title, status_id, updated_by: userId };
@@ -95,28 +98,39 @@ exports.moveTicket = async ({ id, status_id, userId }) => {
       [status_id, userId, id]
     );
 
-    // 4️⃣ Insert activity log
-    await conn.execute(
-      `
-      INSERT INTO ticket_activities
-        (ticket_id, user_id, activity_type, old_value, new_value, created_at)
-      VALUES
-        (?, ?, 'status_changed', ?, ?, NOW())
-      `,
-      [id, userId, oldStatusName, newStatusName]
-    );
+    const [result] = await conn.execute(
+  `
+  INSERT INTO ticket_activities
+    (ticket_id, user_id, activity_type, old_value, new_value, created_at)
+  VALUES
+    (?, ?, 'status_changed', ?, ?, NOW())
+  `,
+  [id, userId, oldStatusName, newStatusName]
+);
 
-    await conn.commit();
+const insertId = result.insertId;
 
-    // ✅ Return payload for UI / WebSocket
-    return {
-      id,
-      status_id,
-      updated_by: userId,
-      user_name: userName,
-      old_message: oldStatusName,
-      message: newStatusName
-    };
+const [[row]] = await conn.execute(
+  `
+  SELECT created_at
+  FROM ticket_activities
+  WHERE id = ?
+  `,
+  [insertId]
+);
+
+await conn.commit();
+
+return {
+  id,
+  status_id,
+  updated_by: userId,
+  user_name: userName,
+  old_message: oldStatusName,
+  message: newStatusName,
+  created_at: row.created_at
+};
+
 
   } catch (err) {
     await conn.rollback();
@@ -134,6 +148,10 @@ exports.getAllTickets = async () => {
        id,
        title,
        status_id,
+       assignee_id,
+       severity,
+       infotag_name,
+       infotag_color,
        created_by,
        updated_by,
        created_at,
@@ -159,6 +177,188 @@ exports.getTicketsByUser = async (userId) => {
      WHERE created_by = ?
      ORDER BY id DESC`,
     [userId]
+  );
+
+  return rows;
+};
+
+async function insertActivity(conn, {
+  ticketId,
+  userId,
+  type,
+  oldValue,
+  newValue
+}) {
+  const [result] = await conn.execute(
+    `
+    INSERT INTO ticket_activities
+      (ticket_id, user_id, activity_type, old_value, new_value, created_at)
+    VALUES
+      (?, ?, ?, ?, ?, NOW())
+    `,
+    [ticketId, userId, type, oldValue, newValue]
+  );
+
+  const [[row]] = await conn.execute(
+    `SELECT created_at FROM ticket_activities WHERE id = ?`,
+    [result.insertId]
+  );
+
+  return row.created_at;
+}
+
+exports.updateTicketTitle = async ({ id, title, userId }) => {
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [[old]] = await conn.execute(
+      `SELECT title FROM tickets WHERE id = ?`,
+      [id]
+    );
+    if (!old) throw new Error("Ticket not found");
+
+    await conn.execute(
+      `UPDATE tickets SET title = ?, updated_by = ? WHERE id = ?`,
+      [title, userId, id]
+    );
+
+    const created_at = await insertActivity(conn, {
+      ticketId: id,
+      userId,
+      type: "title_changed",
+      oldValue: old.title,
+      newValue: title
+    });
+
+    await conn.commit();
+
+    return {
+      id,
+      title,
+      updated_by: userId,
+      old_message: old.title,
+      message: title,
+      created_at
+    };
+
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+};
+
+exports.updateTicketAssignee = async ({ id, assignee_id, userId }) => {
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [[old]] = await conn.execute(
+      `
+      SELECT u.name AS name
+      FROM tickets t
+      LEFT JOIN users u ON u.id = t.assignee_id
+      WHERE t.id = ?
+      `,
+      [id]
+    );
+
+    const [[newUser]] = await conn.execute(
+      `SELECT name FROM users WHERE id = ?`,
+      [assignee_id]
+    );
+
+    await conn.execute(
+      `UPDATE tickets SET assignee_id = ?, updated_by = ? WHERE id = ?`,
+      [assignee_id, userId, id]
+    );
+
+    const created_at = await insertActivity(conn, {
+      ticketId: id,
+      userId,
+      type: "assignee_changed",
+      oldValue: old?.name ?? "Unassigned",
+      newValue: newUser?.name ?? "Unknown"
+    });
+
+    await conn.commit();
+
+    return {
+      id,
+      assignee_id,
+      old_message: old?.name ?? "Unassigned",
+      message: newUser?.name ?? "Unknown",
+      created_at
+    };
+
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+};
+
+exports.updateTicketSeverity = async ({ id, severity, userId }) => {
+  const conn = await db.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [[old]] = await conn.execute(
+      `SELECT severity FROM tickets WHERE id = ?`,
+      [id]
+    );
+
+    await conn.execute(
+      `UPDATE tickets SET severity = ?, updated_by = ? WHERE id = ?`,
+      [severity, userId, id]
+    );
+
+    const created_at = await insertActivity(conn, {
+      ticketId: id,
+      userId,
+      type: "severity_changed",
+      oldValue: old.severity,
+      newValue: severity
+    });
+
+    await conn.commit();
+
+    return {
+      id,
+      severity,
+      old_message: old.severity,
+      message: severity,
+      created_at
+    };
+
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+};
+
+exports.getAssigneesList = async ({ boardId }) => {
+  const [rows] = await db.execute(
+    `
+    SELECT DISTINCT
+      u.id,
+      u.name,
+      u.email
+    FROM users u
+    INNER JOIN board_users bu ON bu.user_id = u.id
+    WHERE bu.board_id = ?
+      AND u.is_active = 1
+    ORDER BY u.name ASC
+    `,
+    [boardId]
   );
 
   return rows;
