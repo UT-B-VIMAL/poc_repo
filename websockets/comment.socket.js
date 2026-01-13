@@ -225,20 +225,31 @@ module.exports.createServer = function () {
 
   async function handleDeleteComment(ws, payload) {
     try {
-      const { commentId } = payload;
-      if (!commentId) return;
+      // payload.commentId is ACTUALLY activity.id
+      const { commentId: activityId } = payload;
+      if (!activityId) return;
 
-      await deleteComment({
-        commentId,
-        userId: ws.userId,
+      // 🔥 CAPTURE DB RESULT
+      const deletedActivity = await deleteComment({
+        activityId,
+        u
       });
 
-      broadcast(ws, "COMMENT_DELETED", { id: commentId });
+      // 🔥 BROADCAST FULL PAYLOAD
+      broadcast(ws, "COMMENT_DELETED", deletedActivity);
+
     } catch (err) {
-      console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Delete failed" }));
+      console.error("Delete comment failed:", err);
+      ws.send(
+        JSON.stringify({
+          type: "ERROR",
+          message: "Delete failed",
+        })
+      );
     }
   }
+
+
 
 
   async function handleUploadAttachments(ws, payload) {
