@@ -4,7 +4,7 @@ const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
 const {
   createComment,
   getCommentsByTask,
-  updateComment,
+  editComment,
   deleteComment,
 } = require("../modals/comment.model");
 const { moveTicket, updateTicketTitle, updateTicketAssignee, updateTicketSeverity } = require("../modals/ticket.model");
@@ -257,23 +257,33 @@ async function handleSeverityChange(ws, payload) {
     }
   }
 
-  async function handleEditComment(ws, payload) {
-    try {
-      const { commentId, message } = payload;
-      if (!commentId || !message) return;
+ async function handleEditComment(ws, payload) {
+  try {
+    console.log("✏️ Edit comment payload:", payload);
+    const { commentId: activityId, message } = payload;
 
-      const updated = await updateComment({
-        commentId,
-        userId: ws.userId,
-        message,
-      });
+    if (!activityId || !message) return;
 
-      broadcast(ws, "COMMENT_UPDATED", updated);
-    } catch (err) {
-      console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Edit failed" }));
-    }
+    const updated = await editComment({
+      activityId,          
+      content: message,
+      userId: ws.userId,
+    });
+
+    // broadcast updated activity row
+    broadcast(ws, "COMMENT_UPDATED", updated);
+
+  } catch (err) {
+    console.error(err);
+    ws.send(
+      JSON.stringify({
+        type: "ERROR",
+        message: "Edit failed",
+      })
+    );
   }
+}
+
 
   async function handleDeleteComment(ws, payload) {
     try {

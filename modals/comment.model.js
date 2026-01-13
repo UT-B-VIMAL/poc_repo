@@ -63,38 +63,45 @@ async function createComment({ taskId, userId, message }) {
 /* ============================= */
 /* EDIT COMMENT */
 /* ============================= */
-async function editComment({ commentId, userId, newMessage }) {
+async function editComment({ activityId, content, userId }) {
   const conn = await db.getConnection();
 
   try {
     await conn.beginTransaction();
 
-    // 1️⃣ Get old comment + ticket
-    const [[old]] = await conn.execute(
+    // 1️⃣ Get original activity + comment
+    const [[activity]] = await conn.execute(
       `
-      SELECT comment, ticket_id
-      FROM ticket_comments
-      WHERE id = ?
+      SELECT
+        ta.id AS activity_id,
+        ta.comment_id,
+        ta.ticket_id,
+        tc.comment AS old_comment
+      FROM ticket_activities ta
+      JOIN ticket_comments tc ON tc.id = ta.comment_id
+      WHERE ta.id = ?
+        AND ta.activity_type = 'comment_added'
+        AND ta.deleted_at IS NULL
       `,
-      [commentId]
+      [activityId]
     );
 
-    if (!old) throw new Error("Comment not found");
+    if (!activity) throw new Error("Activity not found");
 
-    // 2️⃣ Update comment table
+    const { comment_id, ticket_id, old_comment } = activity;
+
+    // 2️⃣ Update comment table (source of truth)
     await conn.execute(
       `
-      UPDATE ticket_comments
-      SET
-        comment = ?,
-        updated_by = ?,
-        updated_at = NOW()
-      WHERE id = ?
-      `,
-      [newMessage, userId, commentId]
+  UPDATE ticket_comments
+  SET comment = ?
+  WHERE id = ?
+  `,
+      [content, comment_id]
     );
 
-    // 3️⃣ Update SAME activity row (no new activity)
+
+    // 3️⃣ UPDATE SAME activity row (important 🔥)
     await conn.execute(
       `
       UPDATE ticket_activities
@@ -103,33 +110,49 @@ async function editComment({ commentId, userId, newMessage }) {
         old_value = ?,
         updated_by = ?,
         updated_at = NOW()
-      WHERE comment_id = ?
-        AND activity_type = 'comment_added'
+      WHERE id = ?
       `,
-      [newMessage, old.comment, userId, commentId]
+      [content, old_comment, userId, activityId]
     );
 
-    // 4️⃣ Fetch updated comment WITH updated_user_name
-    const [[row]] = await conn.execute(
+    // 4️⃣ (Optional) Insert history row for audit (not UI)
+    await conn.execute(
       `
-      SELECT
-        tc.id,
-        tc.ticket_id,
-        tc.user_id,
-        u.name AS user_name,
-        tc.comment,
-        tc.created_at,
-        uu.name AS updated_user_name
-      FROM ticket_comments tc
-      JOIN users u ON u.id = tc.user_id
-      LEFT JOIN users uu ON uu.id = tc.updated_by
-      WHERE tc.id = ?
+      INSERT INTO ticket_activities
+        (
+          ticket_id,
+          user_id,
+          activity_type,
+          comment_id,
+          old_value,
+          new_value,
+          created_at
+        )
+      VALUES
+        (?, ?, 'comment_edited', ?, ?, ?, NOW())
       `,
-      [commentId]
+      [ticket_id, userId, comment_id, old_comment, content]
+    );
+
+    // 5️⃣ Get editor name
+    const [[editor]] = await conn.execute(
+      `SELECT name FROM users WHERE id = ?`,
+      [userId]
     );
 
     await conn.commit();
-    return row;
+
+    // ✅ IMPORTANT: return SAME activity id
+    return {
+      id: activityId, // 👈 SAME ROW UPDATED
+      ticket_id,
+      message: content,
+      edited: true,
+      old_message: old_comment,
+      updated_by: userId,
+      updated_user_name: editor?.name || "Unknown",
+      updated_at: new Date(),
+    };
 
   } catch (err) {
     await conn.rollback();
@@ -138,6 +161,7 @@ async function editComment({ commentId, userId, newMessage }) {
     conn.release();
   }
 }
+
 
 
 
@@ -161,10 +185,9 @@ async function deleteComment({ activityId, userId }) {
         tc.comment,
         u.name AS comment_owner_name
       FROM ticket_activities ta
-      JOIN ticket_comments tc ON tc.id = ta.comment_id
-      JOIN users u ON u.id = tc.user_id
+      LEFT JOIN ticket_comments tc ON tc.id = ta.comment_id
+      LEFT JOIN users u ON u.id = tc.user_id
       WHERE ta.id = ?
-        AND ta.activity_type = 'comment_added'
       `,
       [activityId]
     );
@@ -172,14 +195,14 @@ async function deleteComment({ activityId, userId }) {
     if (!activity) throw new Error("Activity not found");
 
     await conn.execute(
-  `
+      `
   UPDATE ticket_activities
   SET
     deleted_at = NOW() 
   WHERE id = ?
   `,
-  [activityId]
-);
+      [activityId]
+    );
 
 
     const {
@@ -190,10 +213,12 @@ async function deleteComment({ activityId, userId }) {
     } = activity;
 
     // 2️⃣ Delete comment
-    await conn.execute(
-      `DELETE FROM ticket_comments WHERE id = ?`,
-      [comment_id]
-    );
+    if (comment_id) {
+      await conn.execute(
+        `DELETE FROM ticket_comments WHERE id = ?`,
+        [comment_id]
+      );
+    }
 
     // 3️⃣ Log delete activity
     const [activityRes] = await conn.execute(
@@ -214,7 +239,7 @@ async function deleteComment({ activityId, userId }) {
       [
         ticket_id,
         userId,
-        comment_id,
+        comment_id ?? null,
         comment,
         JSON.stringify({
           deleted_by: userId,
@@ -268,9 +293,12 @@ async function getCommentsByTask(taskId) {
       ta.old_value AS old_message,
       ta.new_value AS message,
       ta.created_at,
-      u.name AS user_name
+      ta.updated_by,
+      u.name AS user_name,
+      ub.name AS updated_user_name
     FROM ticket_activities ta
     JOIN users u ON u.id = ta.user_id
+    LEFT JOIN users ub ON ub.id = ta.updated_by
     WHERE ta.ticket_id = ? AND ta.deleted_at IS NULL
     ORDER BY ta.created_at ASC
     `,
