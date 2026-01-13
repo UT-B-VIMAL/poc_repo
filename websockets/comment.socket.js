@@ -1,16 +1,19 @@
 const WebSocket = require("ws");
 const { verifySocketToken } = require("../utils/jwt");
 const { isTokenBlacklisted } = require("../utils/tokenBlacklist");
-const { createComment, getCommentsByTask, updateComment, deleteComment, } = require("../modals/comment.model");
 const {
-  moveTicket,
-} = require("../modals/ticket.model");
+  createComment,
+  getCommentsByTask,
+  updateComment,
+  deleteComment,
+} = require("../modals/comment.model");
+const { moveTicket, updateTicketTitle, updateTicketAssignee, updateTicketSeverity } = require("../modals/ticket.model");
 const { saveAttachment } = require("../utils/attachmentUploader");
 const db = require("../utils/db");
 
 module.exports.createServer = function () {
   const wss = new WebSocket.Server({ noServer: true });
-  const tasks = new Map(); // taskId => Map(userId => Set(ws))
+  const tasks = new Map();
 
   wss.on("connection", (ws) => {
     ws.isAlive = true;
@@ -72,13 +75,20 @@ module.exports.createServer = function () {
       case "DELETE_COMMENT":
         return handleDeleteComment(ws, payload);
 
-
       case "UPLOAD_ATTACHMENTS":
         return handleUploadAttachments(ws, payload);
 
       case "STATUS_CHANGED":
         return handleMoveCard(ws, payload);
 
+      case "TITLE_CHANGED":
+        return handleTitleChange(ws, payload);
+
+      case "ASSIGNEE_CHANGED":
+        return handleAssigneeChange(ws, payload);
+
+      case "SEVERITY_CHANGED":
+        return handleSeverityChange(ws, payload);
 
       default:
         console.warn("Unknown WS type:", type);
@@ -86,37 +96,61 @@ module.exports.createServer = function () {
   }
 
   async function handleMoveCard(ws, payload) {
-
     try {
       const { id, status_id } = payload;
 
-      if (!id || status_id === undefined) return ws.send(JSON.stringify({ type: "ERROR", message: "Missing move data" }));
+      if (!id || status_id === undefined)
+        return ws.send(
+          JSON.stringify({ type: "ERROR", message: "Missing move data" })
+        );
 
       const card = await moveTicket({ id, status_id, userId: ws.userId });
 
       broadcast(ws, "CARD_MOVED", card);
-
-    } catch (err) { console.error(err); ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" })); }
+    } catch (err) {
+      console.error(err);
+      ws.send(JSON.stringify({ type: "ERROR", message: "Move failed" }));
+    }
   }
+
+  async function handleTitleChange(ws, payload) {
+  const card = await updateTicketTitle({ ...payload, userId: ws.userId });
+  broadcast(ws, "TITLE_CHANGED", card);
+}
+
+async function handleAssigneeChange(ws, payload) {
+  const card = await updateTicketAssignee({ ...payload, userId: ws.userId });
+  broadcast(ws, "ASSIGNEE_CHANGED", card);
+}
+
+async function handleSeverityChange(ws, payload) {
+  const card = await updateTicketSeverity({ ...payload, userId: ws.userId });
+  broadcast(ws, "SEVERITY_CHANGED", card);
+}
+
 
   function authenticateAndJoin(ws, { taskId, token }) {
     try {
       if (!token) {
-        ws.send(JSON.stringify({
-          type: "AUTH_FAILED",
-          reason: "TOKEN_MISSING",
-          message: "Authentication token missing"
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "TOKEN_MISSING",
+            message: "Authentication token missing",
+          })
+        );
         ws.close();
         return;
       }
 
       if (isTokenBlacklisted(token)) {
-        ws.send(JSON.stringify({
-          type: "AUTH_FAILED",
-          reason: "TOKEN_REVOKED",
-          message: "Token has been revoked"
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "TOKEN_REVOKED",
+            message: "Token has been revoked",
+          })
+        );
         ws.close();
         return;
       }
@@ -126,35 +160,40 @@ module.exports.createServer = function () {
       ws.taskId = taskId;
 
       if (!tasks.has(taskId)) tasks.set(taskId, new Map());
-      if (!tasks.get(taskId).has(ws.userId)) tasks.get(taskId).set(ws.userId, new Set());
+      if (!tasks.get(taskId).has(ws.userId))
+        tasks.get(taskId).set(ws.userId, new Set());
       tasks.get(taskId).get(ws.userId).add(ws);
 
-      ws.send(JSON.stringify({
-        type: "AUTH_SUCCESS",
-        payload: { taskId, userId: ws.userId }
-      }));
-
+      ws.send(
+        JSON.stringify({
+          type: "AUTH_SUCCESS",
+          payload: { taskId, userId: ws.userId },
+        })
+      );
     } catch (err) {
       console.error("Comment AUTH failed:", err);
 
       // 🔥 CRITICAL: distinguish expired token
       if (err.name === "TokenExpiredError") {
-        ws.send(JSON.stringify({
-          type: "AUTH_EXPIRED",
-          message: "Session expired. Please login again."
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_EXPIRED",
+            message: "Session expired. Please login again.",
+          })
+        );
       } else {
-        ws.send(JSON.stringify({
-          type: "AUTH_FAILED",
-          reason: "INVALID_TOKEN",
-          message: "Invalid authentication token"
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "AUTH_FAILED",
+            reason: "INVALID_TOKEN",
+            message: "Invalid authentication token",
+          })
+        );
       }
 
       ws.close();
     }
   }
-
 
   function cleanup(ws) {
     const { taskId, userId } = ws;
@@ -245,12 +284,11 @@ module.exports.createServer = function () {
       // 🔥 CAPTURE DB RESULT
       const deletedActivity = await deleteComment({
         activityId,
-        userId: ws.userId
+        userId: ws.userId,
       });
 
       // 🔥 BROADCAST FULL PAYLOAD
       broadcast(ws, "COMMENT_DELETED", deletedActivity);
-
     } catch (err) {
       console.error("Delete comment failed:", err);
       ws.send(
@@ -261,9 +299,6 @@ module.exports.createServer = function () {
       );
     }
   }
-
-
-
 
   async function handleUploadAttachments(ws, payload) {
     const { files } = payload;
@@ -280,10 +315,10 @@ module.exports.createServer = function () {
 
     for (const file of files) {
       const attachment = await saveAttachment({
-        commentId,              // internal only
+        commentId, // internal only
         taskId: ws.taskId,
         userId: ws.userId,
-        file
+        file,
       });
 
       console.log("🗂️ Saved attachment:", attachment);
@@ -296,9 +331,9 @@ module.exports.createServer = function () {
         user_name: userName,
         message: JSON.stringify({
           fileType: attachment.file_type,
-          fileUrl: attachment.file_url
+          fileUrl: attachment.file_url,
         }),
-        created_at: attachment.created_at
+        created_at: attachment.created_at,
       });
     }
 
@@ -306,14 +341,11 @@ module.exports.createServer = function () {
   }
 
   async function getUserNameById(userId) {
-    const [[row]] = await db.execute(
-      "SELECT name FROM users WHERE id = ?",
-      [userId]
-    );
+    const [[row]] = await db.execute("SELECT name FROM users WHERE id = ?", [
+      userId,
+    ]);
     return row?.name || "Unknown";
   }
-
-
 
   return wss;
 };
