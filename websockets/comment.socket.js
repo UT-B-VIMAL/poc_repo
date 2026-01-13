@@ -245,7 +245,7 @@ module.exports.createServer = function () {
       // 🔥 CAPTURE DB RESULT
       const deletedActivity = await deleteComment({
         activityId,
-        u
+        userId: ws.userId
       });
 
       // 🔥 BROADCAST FULL PAYLOAD
