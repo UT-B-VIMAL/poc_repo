@@ -126,12 +126,13 @@ async function editComment({ activityId, content, userId }) {
           comment_id,
           old_value,
           new_value,
-          created_at
+          created_at,
+          updated_by
         )
       VALUES
         (?, ?, 'comment_edited', ?, ?, ?, NOW())
       `,
-      [ticket_id, userId, comment_id, old_comment, content]
+      [ticket_id, userId, comment_id, old_comment, content, userId]
     );
 
     // 5️⃣ Get editor name
