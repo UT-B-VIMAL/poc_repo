@@ -130,7 +130,7 @@ async function editComment({ activityId, content, userId }) {
           updated_by
         )
       VALUES
-        (?, ?, 'comment_edited', ?, ?, ?, NOW())
+        (?, ?, 'comment_edited', ?, ?, ?, NOW(), ?)
       `,
       [ticket_id, userId, comment_id, old_comment, content, userId]
     );
