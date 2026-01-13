@@ -20,7 +20,7 @@ module.exports.createServer = function () {
     console.log("💬 Comment WS connected");
     ws.isCommentSocket = true;
 
-    ws.on("pong", () => ws.isAlive = true);
+    ws.on("pong", () => (ws.isAlive = true));
 
     ws.on("message", async (raw) => {
       try {
@@ -32,11 +32,14 @@ module.exports.createServer = function () {
     });
 
     ws.on("close", () => cleanup(ws));
-    ws.on("error", (err) => { console.error(err); cleanup(ws); });
+    ws.on("error", (err) => {
+      console.error(err);
+      cleanup(ws);
+    });
   });
 
   const interval = setInterval(() => {
-    wss.clients.forEach(ws => {
+    wss.clients.forEach((ws) => {
       if (!ws.isAlive) return ws.terminate();
       ws.isAlive = false;
       ws.ping();
@@ -81,7 +84,6 @@ module.exports.createServer = function () {
         console.warn("Unknown WS type:", type);
     }
   }
-
 
   async function handleMoveCard(ws, payload) {
 
@@ -174,8 +176,8 @@ module.exports.createServer = function () {
     if (!task) return;
 
     const message = JSON.stringify({ type, payload });
-    task.forEach(sockets => {
-      sockets.forEach(client => {
+    task.forEach((sockets) => {
+      sockets.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) client.send(message);
       });
     });
@@ -188,20 +190,31 @@ module.exports.createServer = function () {
       ws.send(JSON.stringify({ type: "COMMENTS_LIST", payload: comments }));
     } catch (err) {
       console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Failed to load comments" }));
+      ws.send(
+        JSON.stringify({ type: "ERROR", message: "Failed to load comments" })
+      );
     }
   }
 
   async function handleCreateComment(ws, payload) {
     try {
       const { message } = payload;
-      if (!message) return ws.send(JSON.stringify({ type: "ERROR", message: "Message is required" }));
+      if (!message)
+        return ws.send(
+          JSON.stringify({ type: "ERROR", message: "Message is required" })
+        );
 
-      const comment = await createComment({ taskId: ws.taskId, userId: ws.userId, message });
+      const comment = await createComment({
+        taskId: ws.taskId,
+        userId: ws.userId,
+        message,
+      });
       broadcast(ws, "COMMENT_CREATED", comment);
     } catch (err) {
       console.error(err);
-      ws.send(JSON.stringify({ type: "ERROR", message: "Failed to create comment" }));
+      ws.send(
+        JSON.stringify({ type: "ERROR", message: "Failed to create comment" })
+      );
     }
   }
 
