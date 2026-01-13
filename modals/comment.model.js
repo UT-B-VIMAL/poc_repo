@@ -144,35 +144,58 @@ async function editComment({ commentId, userId, newMessage }) {
 /* ============================= */
 /* DELETE COMMENT */
 /* ============================= */
-async function deleteComment({ commentId, userId }) {
+async function deleteComment({ activityId, userId }) {
   const conn = await db.getConnection();
 
   try {
     await conn.beginTransaction();
 
-    // 1️⃣ Get comment before delete
-    const [[comment]] = await conn.execute(
+    console.log("Deleting activity:", activityId, "by user:", userId);
+
+    // 1️⃣ Get activity → comment + owner + ticket
+    const [[activity]] = await conn.execute(
       `
       SELECT
-        tc.ticket_id,
+        ta.comment_id,
+        ta.ticket_id,
         tc.comment,
-        u.name AS comment_owner
-      FROM ticket_comments tc
+        u.name AS comment_owner_name
+      FROM ticket_activities ta
+      JOIN ticket_comments tc ON tc.id = ta.comment_id
       JOIN users u ON u.id = tc.user_id
-      WHERE tc.id = ?
+      WHERE ta.id = ?
+        AND ta.activity_type = 'comment_added'
       `,
-      [commentId]
+      [activityId]
     );
 
-    if (!comment) throw new Error("Comment not found");
+    if (!activity) throw new Error("Activity not found");
+
+    await conn.execute(
+  `
+  UPDATE ticket_activities
+  SET
+    deleted_at = NOW() 
+  WHERE id = ?
+  `,
+  [activityId]
+);
+
+
+    const {
+      comment_id,
+      ticket_id,
+      comment,
+      comment_owner_name,
+    } = activity;
 
     // 2️⃣ Delete comment
     await conn.execute(
       `DELETE FROM ticket_comments WHERE id = ?`,
-      [commentId]
+      [comment_id]
     );
 
-    // 3️⃣ Log activity (WHO deleted + WHAT deleted)
+    // 3️⃣ Log delete activity
     const [activityRes] = await conn.execute(
       `
       INSERT INTO ticket_activities
@@ -189,30 +212,35 @@ async function deleteComment({ commentId, userId }) {
         (?, ?, 'comment_deleted', ?, ?, ?, NOW())
       `,
       [
-        comment.ticket_id,
+        ticket_id,
         userId,
-        commentId,
-        comment.comment,
-        JSON.stringify({ deleted_by: userId })
+        comment_id,
+        comment,
+        JSON.stringify({
+          deleted_by: userId,
+          comment_owner: comment_owner_name,
+        }),
       ]
     );
 
-    // 4️⃣ Fetch deleted user name
-    const [[deletedUser]] = await conn.execute(
+    // 4️⃣ Get deleter name
+    const [[deleter]] = await conn.execute(
       `SELECT name FROM users WHERE id = ?`,
       [userId]
     );
 
     await conn.commit();
 
+    // ✅ RETURN EXACT FRONTEND SHAPE
     return {
-      id: commentId,
-      ticket_id: comment.ticket_id,
+      id: activityId,                 // used to remove original activity
+      ticket_id,
       deleted: true,
       deleted_by: userId,
-      deleted_user_name: deletedUser?.name || "Unknown",
-      deleted_comment: comment.comment,
-      activity_id: activityRes.insertId
+      deleted_user_name: deleter?.name || "Unknown",
+      deleted_comment: comment,
+      created_at: new Date(),
+      activity_id: activityRes.insertId,
     };
 
   } catch (err) {
@@ -222,6 +250,8 @@ async function deleteComment({ commentId, userId }) {
     conn.release();
   }
 }
+
+
 
 
 /* ============================= */
@@ -241,7 +271,7 @@ async function getCommentsByTask(taskId) {
       u.name AS user_name
     FROM ticket_activities ta
     JOIN users u ON u.id = ta.user_id
-    WHERE ta.ticket_id = ?
+    WHERE ta.ticket_id = ? AND ta.deleted_at IS NULL
     ORDER BY ta.created_at ASC
     `,
     [taskId]

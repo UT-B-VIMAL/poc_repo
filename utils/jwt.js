@@ -10,3 +10,4 @@ exports.generateToken = (payload) => {
 exports.verifySocketToken = (token) => {
   return jwt.verify(token, JWT_SECRET);
 };
+
