@@ -6,6 +6,7 @@ const cors = require("cors");
 const kanbanSocket = require("./websockets/kanban.socket");
 const commentSocket = require("./websockets/comment.socket");
 const authRoutes = require("./routes/auth.routes");
+const uploadRoutes = require("./routes/upload.routes");
 
 const app = express();
 app.use(cors({ origin: "*" }));
@@ -14,6 +15,7 @@ app.use("/uploads", express.static("uploads"));
 
 app.use("/api/auth", authRoutes);
 app.use("/users",authRoutes);
+app.use("/api", uploadRoutes);
 
 const server = http.createServer(app);
 
