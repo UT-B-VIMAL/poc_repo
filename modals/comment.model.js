@@ -50,8 +50,14 @@ async function createComment({ taskId, userId, message }) {
     );
 
     await conn.commit();
-    return rows[0];
-
+    if (rows.length > 0) {
+      return {
+        ...rows[0],
+        activity_type: "comment_added"
+      };
+    } else {
+      return null; // or throw an error if comment not found
+    }
   } catch (err) {
     await conn.rollback();
     throw err;
